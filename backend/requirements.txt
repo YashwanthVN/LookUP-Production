@@ -15,7 +15,7 @@ safetensors>=0.4.3     # Secure weight loading
 # torch>=2.2.0         # Base requirement for GNNs & Transformers
 # Tell pip where to find pre-built binaries for PyG extensions
 --find-links https://data.pyg.org/whl/torch-2.2.0+cpu.html
-torch-scatter
+#torch-scatter
 torch-sparse
 torch-cluster
 torch-spline-conv
