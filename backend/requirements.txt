@@ -1,0 +1,49 @@
+# Core LLM & agent orchestration
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-openai>=0.3.0
+langchain-community>=0.3.0
+
+# Hugging Face & Fine-Tuning (New)
+transformers>=4.40.0
+peft>=0.10.0           # Parameter-Efficient Fine-Tuning (LoRA)
+accelerate>=0.29.0     # Optimized model loading/inference
+bitsandbytes>=0.43.0   # 8-bit/4-bit quantization support
+safetensors>=0.4.3     # Secure weight loading
+
+# Graph Neural Networks
+# torch>=2.2.0         # Base requirement for GNNs & Transformers
+torch-geometric>=2.6.0
+torch-geometric-temporal>=0.54.0
+networkx>=3.2.1
+
+# Financial data
+yfinance>=0.2.50
+mcp>=0.1.0
+# yfnhanced-mcp will be installed via npm, not pip
+finnhub-python>=2.4.19
+
+# Reranker
+ragatouille>=0.0.8
+sentence-transformers>=3.0.0
+
+# Vector storage
+qdrant-client>=1.9.0
+chromadb>=0.5.0
+
+# Utilities
+pydantic>=2.7.0
+python-dotenv>=1.0.0
+pandas>=2.2.0
+numpy>=1.26.0
+requests>=2.31.0
+tqdm>=4.66.0
+pyyaml>=6.0.1
+
+# Testing & dev
+pytest>=8.0.0
+black>=24.0.0
+ruff>=0.3.0
+
+#News API
+newsapi-python>=0.2.6
