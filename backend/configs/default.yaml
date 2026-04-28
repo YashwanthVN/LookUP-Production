@@ -1,0 +1,11 @@
+gnn:
+  hidden_dim: 64
+  out_dim: 32
+  num_layers: 3
+temporal:
+  snapshot_quarters: 4
+reranker:
+  colbert_model: "colbert-ir/colbertv2.0"
+  cross_encoder_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+data:
+  cache_ttl: 3600
