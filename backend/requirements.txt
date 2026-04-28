@@ -23,6 +23,14 @@ torch-geometric>=2.6.0
 torch-geometric-temporal>=0.54.0
 networkx>=3.2.1
 
+# API & Web Server
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+# API Client for Gemini (Used in your writer.py)
+google-genai>=0.3.0
+
 # Financial data
 yfinance>=0.2.50
 mcp>=0.1.0
