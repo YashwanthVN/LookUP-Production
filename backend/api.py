@@ -1,13 +1,13 @@
 """
 LookUP FastAPI Backend
-Run with: uvicorn api:app --host 0.0.0.0 --port 8000 --reload
-Place this file in your LookUP root directory (same level as streamlit_app.py)
+Run with: uvicorn api.app --host 0.0.0.0 --port 8000 --reload
 """
 
 import os
 import sys
 import torch
 import yfinance as yf
+import threading
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -27,47 +27,68 @@ load_dotenv()
 
 app = FastAPI(title="LookUP API", version="1.0.0")
 
-# Allow requests from the React frontend (localhost:5173 for dev, your domain for prod)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://lookup-flax.vercel.app/", "https://lookup-git-main-yashwanthvns-projects.vercel.app/"],
+    allow_origins=[
+        "http://localhost:5173", 
+        "http://localhost:3000", 
+        "https://lookup-flax.vercel.app", 
+        "https://lookup-git-main-yashwanthvns-projects.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ---------------------------------------------------------------------------
-# Startup: load heavy models once
+# Global State & Background Loading
 # ---------------------------------------------------------------------------
 kg = None
 langgraph_app = None
+is_ready = False  # Track if models are finished loading
+
+def load_models_background():
+    """Heavy initialization logic run in a separate thread."""
+    global kg, langgraph_app, is_ready
+    try:
+        print("⏳ Starting background model loading (GNN & LangGraph)...")
+        
+        # 1. Initialize KG
+        kg = DynamicFinancialKG()
+        set_kg(kg)
+        
+        # 2. Load GNN Weights
+        model_path = os.path.join(project_root, "calibrated_gnn_reasoning.pt")
+        if os.path.exists(model_path):
+            kg.gnn_model.load_state_dict(torch.load(model_path, map_location="cpu"))
+            kg.gnn_model.eval()
+            print("➡️ GNN Weights loaded.")
+        
+        # 3. Create LangGraph
+        langgraph_app = create_graph()
+        
+        is_ready = True
+        print("✅ LookUP API is fully initialized and ready for analysis.")
+    except Exception as e:
+        print(f"❌ Background loading failed: {e}")
 
 @app.on_event("startup")
 async def startup_event():
-    global kg, langgraph_app
-    kg = DynamicFinancialKG()
-    set_kg(kg)
-    model_path = os.path.join(project_root, "calibrated_gnn_reasoning.pt")
-    if os.path.exists(model_path):
-        kg.gnn_model.load_state_dict(torch.load(model_path, map_location="cpu"))
-        kg.gnn_model.eval()
-    langgraph_app = create_graph()
-    print("✅ LookUP API ready.")
-
+    # Start the thread so the main process can immediately finish startup and bind to port
+    thread = threading.Thread(target=load_models_background)
+    thread.start()
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
 # ---------------------------------------------------------------------------
 class AnalyzeRequest(BaseModel):
     query: str
-    ticker: str  # already resolved on the client side
-
+    ticker: str 
 
 class GraphHealth(BaseModel):
     nodes: int
     financial_edges: int
     news_edges: int
-
 
 class AnalyzeResponse(BaseModel):
     ticker: str
@@ -78,35 +99,32 @@ class AnalyzeResponse(BaseModel):
     competitor_candidates: list[str]
     graph_health: GraphHealth
 
-
 class ResolveResponse(BaseModel):
     ticker: str | None
     display_name: str | None
 
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
-
+    """Health check for Render. Returns 202 while loading to avoid timeout."""
+    if not is_ready:
+        return {"status": "loading", "details": "GNN and Agents are warming up"}, 202
+    return {"status": "healthy"}
 
 @app.get("/resolve", response_model=ResolveResponse)
 def resolve_ticker(query: str):
-    """
-    Resolve a natural-language query to a ticker symbol using yfinance Search.
-    """
+    # (Existing Ticker Resolution Logic remains unchanged)
     stop_words = {
         "why", "is", "has", "the", "price", "of", "fallen", "risen",
         "today", "on", "what", "how", "situation", "in", "about", "drop", "dropped",
     }
     words = [w for w in query.lower().split() if w not in stop_words]
     clean_subject = " ".join(words).strip()
-
     if not clean_subject:
         return ResolveResponse(ticker=None, display_name=None)
-
     try:
         search = yf.Search(clean_subject, max_results=5)
         if search.quotes:
@@ -117,22 +135,21 @@ def resolve_ticker(query: str):
                     name = match.get("shortname", match.get("longname", symbol))
                     return ResolveResponse(ticker=symbol, display_name=name)
             best = search.quotes[0]
-            return ResolveResponse(
-                ticker=best["symbol"],
-                display_name=best.get("shortname", best["symbol"]),
-            )
+            return ResolveResponse(ticker=best["symbol"], display_name=best.get("shortname", best["symbol"]))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ticker resolution error: {e}")
-
     return ResolveResponse(ticker=None, display_name=None)
-
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest):
-    """
-    Run the full multi-agent LangGraph pipeline and return structured results.
-    """
-    global kg, langgraph_app
+    global kg, langgraph_app, is_ready
+
+    # Block requests if background thread isn't finished
+    if not is_ready:
+        raise HTTPException(
+            status_code=503, 
+            detail="System is still initializing models. Please try again in a minute."
+        )
 
     initial_state = {
         "query": req.query,
@@ -152,15 +169,9 @@ def analyze(req: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
 
-    # Graph metrics
-    reported = len(
-        [d for u, v, d in kg.graph.edges(data=True) if d.get("relation") == "REPORTED"]
-    )
-    impacts = len(
-        [d for u, v, d in kg.graph.edges(data=True) if d.get("relation") == "IMPACTS"]
-    )
+    reported = len([d for u, v, d in kg.graph.edges(data=True) if d.get("relation") == "REPORTED"])
+    impacts = len([d for u, v, d in kg.graph.edges(data=True) if d.get("relation") == "IMPACTS"])
 
-    # Resolve display name
     try:
         info = yf.Ticker(req.ticker).info
         display_name = info.get("shortName", req.ticker)
