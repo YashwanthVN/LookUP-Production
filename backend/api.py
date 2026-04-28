@@ -30,7 +30,7 @@ app = FastAPI(title="LookUP API", version="1.0.0")
 # Allow requests from the React frontend (localhost:5173 for dev, your domain for prod)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://lookup.vercel.app"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://lookup-flax.vercel.app/", "https://lookup-git-main-yashwanthvns-projects.vercel.app/"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
