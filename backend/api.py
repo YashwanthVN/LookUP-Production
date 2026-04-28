@@ -1,6 +1,7 @@
 """
 LookUP FastAPI Backend
-Run with: uvicorn api.app --host 0.0.0.0 --port 8000 --reload
+Run with: uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+Place this file in your LookUP root directory (same level as streamlit_app.py)
 """
 
 import os
@@ -10,16 +11,16 @@ import yfinance as yf
 import threading
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Ensure project root in path
+# Ensure backend folder is in path
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.graph.financial_kg import DynamicFinancialKG
-from src.inference.reasoning_engine import LookUPReporter
 from src.kg_holder import set_kg
 from src.agents.coordinator import create_graph
 
@@ -30,10 +31,10 @@ app = FastAPI(title="LookUP API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173", 
-        "http://localhost:3000", 
-        "https://lookup-flax.vercel.app", 
-        "https://lookup-git-main-yashwanthvns-projects.vercel.app"
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "https://lookup-flax.vercel.app",
+        "https://lookup-git-main-yashwanthvns-projects.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -41,54 +42,66 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# Global State & Background Loading
+# Global State
 # ---------------------------------------------------------------------------
 kg = None
 langgraph_app = None
-is_ready = False  # Track if models are finished loading
+is_ready = False
 
+
+# ---------------------------------------------------------------------------
+# Background Loader
+# ---------------------------------------------------------------------------
 def load_models_background():
-    """Heavy initialization logic run in a separate thread."""
     global kg, langgraph_app, is_ready
     try:
-        print("⏳ Starting background model loading (GNN & LangGraph)...")
-        
-        # 1. Initialize KG
+        print("⏳ Starting background model loading...", flush=True)
+
+        # 1. KG Init
         kg = DynamicFinancialKG()
         set_kg(kg)
-        
-        # 2. Load GNN Weights
+
+        # 2. Load model
         model_path = os.path.join(project_root, "calibrated_gnn_reasoning.pt")
         if os.path.exists(model_path):
-            kg.gnn_model.load_state_dict(torch.load(model_path, map_location="cpu"))
+            kg.gnn_model.load_state_dict(
+                torch.load(model_path, map_location="cpu")
+            )
             kg.gnn_model.eval()
-            print("➡️ GNN Weights loaded.")
-        
-        # 3. Create LangGraph
+            print("➡️ GNN Weights loaded.", flush=True)
+        else:
+            print("⚠️ Model file not found, skipping load.", flush=True)
+
+        # 3. LangGraph
         langgraph_app = create_graph()
-        
+
         is_ready = True
-        print("✅ LookUP API is fully initialized and ready for analysis.")
+        print("✅ API ready.", flush=True)
+
     except Exception as e:
-        print(f"❌ Background loading failed: {e}")
+        print(f"❌ Background loading failed: {e}", flush=True)
+
 
 @app.on_event("startup")
 async def startup_event():
-    # Start the thread so the main process can immediately finish startup and bind to port
     thread = threading.Thread(target=load_models_background)
+    thread.daemon = True  # important for clean shutdown
     thread.start()
 
+
 # ---------------------------------------------------------------------------
-# Request / Response schemas
+# Schemas
 # ---------------------------------------------------------------------------
 class AnalyzeRequest(BaseModel):
     query: str
-    ticker: str 
+    ticker: str
+
 
 class GraphHealth(BaseModel):
     nodes: int
     financial_edges: int
     news_edges: int
+
 
 class AnalyzeResponse(BaseModel):
     ticker: str
@@ -99,56 +112,70 @@ class AnalyzeResponse(BaseModel):
     competitor_candidates: list[str]
     graph_health: GraphHealth
 
+
 class ResolveResponse(BaseModel):
     ticker: str | None
     display_name: str | None
 
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-
 @app.get("/health")
 def health():
-    """Health check for Render. Returns 202 while loading to avoid timeout."""
+    # Always return 200 (Render requirement)
     if not is_ready:
-        return {"status": "loading", "details": "GNN and Agents are warming up"}, 202
+        return JSONResponse(
+            status_code=200,
+            content={"status": "loading"}
+        )
     return {"status": "healthy"}
+
 
 @app.get("/resolve", response_model=ResolveResponse)
 def resolve_ticker(query: str):
-    # (Existing Ticker Resolution Logic remains unchanged)
     stop_words = {
         "why", "is", "has", "the", "price", "of", "fallen", "risen",
-        "today", "on", "what", "how", "situation", "in", "about", "drop", "dropped",
+        "today", "on", "what", "how", "situation", "in", "about",
+        "drop", "dropped",
     }
+
     words = [w for w in query.lower().split() if w not in stop_words]
     clean_subject = " ".join(words).strip()
+
     if not clean_subject:
         return ResolveResponse(ticker=None, display_name=None)
+
     try:
         search = yf.Search(clean_subject, max_results=5)
         if search.quotes:
             for match in search.quotes:
-                symbol = match.get("symbol")
-                quote_type = match.get("quoteType")
-                if quote_type in ["EQUITY", "INDEX", "CURRENCY"]:
-                    name = match.get("shortname", match.get("longname", symbol))
-                    return ResolveResponse(ticker=symbol, display_name=name)
+                if match.get("quoteType") in ["EQUITY", "INDEX", "CURRENCY"]:
+                    return ResolveResponse(
+                        ticker=match.get("symbol"),
+                        display_name=match.get("shortname", match.get("symbol")),
+                    )
+
             best = search.quotes[0]
-            return ResolveResponse(ticker=best["symbol"], display_name=best.get("shortname", best["symbol"]))
+            return ResolveResponse(
+                ticker=best["symbol"],
+                display_name=best.get("shortname", best["symbol"]),
+            )
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ticker resolution error: {e}")
+        raise HTTPException(500, f"Ticker resolution error: {e}")
+
     return ResolveResponse(ticker=None, display_name=None)
+
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest):
     global kg, langgraph_app, is_ready
 
-    # Block requests if background thread isn't finished
     if not is_ready:
         raise HTTPException(
-            status_code=503, 
-            detail="System is still initializing models. Please try again in a minute."
+            status_code=503,
+            detail="System still initializing. Try again shortly.",
         )
 
     initial_state = {
@@ -167,10 +194,16 @@ def analyze(req: AnalyzeRequest):
             config={"configurable": {"thread_id": req.ticker}},
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
+        raise HTTPException(500, f"Analysis failed: {e}")
 
-    reported = len([d for u, v, d in kg.graph.edges(data=True) if d.get("relation") == "REPORTED"])
-    impacts = len([d for u, v, d in kg.graph.edges(data=True) if d.get("relation") == "IMPACTS"])
+    reported = len([
+        d for _, _, d in kg.graph.edges(data=True)
+        if d.get("relation") == "REPORTED"
+    ])
+    impacts = len([
+        d for _, _, d in kg.graph.edges(data=True)
+        if d.get("relation") == "IMPACTS"
+    ])
 
     try:
         info = yf.Ticker(req.ticker).info
