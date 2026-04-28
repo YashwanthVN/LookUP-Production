@@ -13,6 +13,8 @@ safetensors>=0.4.3     # Secure weight loading
 
 # Graph Neural Networks
 # torch>=2.2.0         # Base requirement for GNNs & Transformers
+# Tell pip where to find pre-built binaries for PyG extensions
+--find-links https://data.pyg.org/whl/torch-2.2.0+cpu.html
 torch-geometric>=2.6.0
 torch-geometric-temporal>=0.54.0
 networkx>=3.2.1
