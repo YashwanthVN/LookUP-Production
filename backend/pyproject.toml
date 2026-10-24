@@ -1,0 +1,63 @@
+[project]
+name = "lookup-backend"
+version = "0.1.0"
+description = "LookUP - multi-hop financial reasoning platform (FastAPI backend)"
+requires-python = ">=3.11,<3.13"
+
+# Direct dependencies only; uv resolves the transitive set into uv.lock.
+#
+# Lower bounds on the shared packages are taken from lookup-attribution's
+# pyproject.toml so that one environment satisfies both projects. Verified
+# compatible against the resolution of 2026-10-24.
+dependencies = [
+    # --- web / API ---
+    "fastapi>=0.160",
+    "uvicorn[standard]>=0.54",
+    "pydantic>=2.14",
+    "python-multipart>=0.0.32",
+
+    # --- agent orchestration ---
+    "langgraph>=1.2",
+    "langchain-core>=1.7",
+
+    # --- models / inference ---
+    "torch>=2.2",
+    "torch-geometric>=2.8.0.post1",     # shared with lookup-attribution
+    "sentence-transformers>=6.1.0",     # shared: MiniLM bi-encoder + cross-encoder
+    "transformers>=5.0",
+    "peft>=0.21",                       # FinBERT LoRA adapters
+    "google-genai>=2.24.0",             # shared: generator + judge
+
+    # --- data ---
+    "numpy>=2.0",
+    "pandas>=3.0",
+    "pyarrow>=25.0.1",                  # shared: parquet artifacts
+    "scikit-learn>=1.9.1",              # shared: BM25 CountVectorizer
+    "scipy>=1.17",
+    "statsmodels>=0.14",                # shared: event statistics
+    "networkx>=3.6",
+    "yfinance>=1.7.0",                  # shared: prices
+    "chromadb>=1.5",
+
+    # --- utilities ---
+    "requests>=2.34.2",                 # shared
+    "python-dotenv>=1.2",
+    "pyyaml>=6.0",
+    "finnhub-python>=2.4",
+    "newsapi-python>=0.2.7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "ruff>=0.17",
+]
+
+[tool.uv]
+# The backend is an application, not an installable library: uv must not try to
+# build it. This also keeps uv from colliding with the existing setup.py.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

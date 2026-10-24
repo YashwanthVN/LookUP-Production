@@ -4,7 +4,7 @@ No network. Synthetic fixtures are used only to test code correctness
 (PROTOCOL.md rule 12), never to produce reported numbers.
 
 Run from the backend directory:
-    .\source\Scripts\python.exe -m pytest tests/test_news_fetcher.py -v
+    uv run pytest tests/test_news_fetcher.py -v
 """
 
 import pandas as pd

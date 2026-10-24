@@ -1,0 +1,8 @@
+
+# environments
+backend/.venv/
+backend/source/
+.venv/
+
+# uv
+.uv-cache/
