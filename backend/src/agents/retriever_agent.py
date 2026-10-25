@@ -1,40 +1,52 @@
-from sentence_transformers import CrossEncoder
-from .state import LOOKUPState
-from src.kg_holder import get_kg
+"""Rank the request's own news pool with the cross-encoder.
 
-# Load cross-encoder reranker once (global to avoid reloading)
-reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+Model: cross-encoder/ms-marco-MiniLM-L-6-v2 over the FULL pool (no prefilter),
+the ranker validated in the research repo. The pool here (primary + sector
+peers by static list) is NOT the validated kNN-neighbour pool; see P4.
+"""
+import threading
+from .state import LOOKUPState
+
+MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+TOP_K = 5
+
+_model = None
+_lock = threading.Lock()
+
+
+def get_model():
+    global _model
+    with _lock:
+        if _model is None:
+            from sentence_transformers import CrossEncoder
+            _model = CrossEncoder(MODEL_NAME)
+    return _model
+
+
+def build_query(query: str, primary: str) -> str:
+    """Name the company: the validated ranker's query always starts with it.
+
+    A bare 'why did it fall' matches on 'fall', not on the company.
+    """
+    base = primary.split(".")[0].upper()
+    q = (query or "").strip() or "why did the stock move"
+    return f"{base}. {q}"
+
 
 def retriever_agent(state: LOOKUPState) -> dict:
-    """
-    Retriever agent:
-    - Uses the vector store to find news articles relevant to the query.
-    - Reranks the top results using a cross-encoder.
-    """
-    kg = get_kg()
-    if kg is None or not hasattr(kg, 'vector_store'):
-        return {"reranked_documents": []}
+    pool = state.get("news_pool") or []
+    if not pool:
+        return {"ranked": [], "reranked_documents": []}
 
-    query = state["query"]
-    # Initial retrieval (e.g., top 20)
-    initial_results = kg.vector_store.search(query, n_results=20)
-    if not initial_results:
-        return {"reranked_documents": []}
+    q = build_query(state.get("query", ""), state["tickers"][0])
+    model = get_model()
+    with _lock:  # one predict at a time; the model object is shared
+        scores = model.predict([(q, d["headline"]) for d in pool])
 
-    # Prepare pairs for cross-encoder: (query, document)
-    pairs = [(query, res['document']) for res in initial_results]
-    scores = reranker.predict(pairs)
-
-    # Combine scores with results and sort
-    for res, score in zip(initial_results, scores):
-        res['rerank_score'] = float(score)
-
-    reranked = sorted(initial_results, key=lambda x: x['rerank_score'], reverse=True)
-
-    # Keep top 5 after reranking
-    top_docs = reranked[:5]
-
-    # Format for state (simple list of strings)
-    formatted_docs = [f"{d['document']} (relevance: {d['rerank_score']:.3f})" for d in top_docs]
-
-    return {"reranked_documents": formatted_docs}
+    ranked = []
+    for d, s in zip(pool, scores):
+        ranked.append({**d, "rerank_score": float(s)})
+    ranked.sort(key=lambda x: x["rerank_score"], reverse=True)
+    top = ranked[:TOP_K]
+    docs = [f"{d['headline']} (relevance: {d['rerank_score']:.3f})" for d in top]
+    return {"ranked": top, "reranked_documents": docs}

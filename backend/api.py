@@ -1,157 +1,132 @@
 """
-LookUP FastAPI Backend
-Run with: uvicorn api:app --host 0.0.0.0 --port 8000 --reload
-Place this file in your LookUP root directory (same level as streamlit_app.py)
+LookUP FastAPI backend.
+Run from backend/:  uv run uvicorn api:app --host 0.0.0.0 --port 8000
 """
-
 import os
 import sys
-import torch
-import yfinance as yf
 import threading
+from contextlib import asynccontextmanager
+
+import yfinance as yf
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from dotenv import load_dotenv
 
-# Ensure backend folder is in path
 project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.graph.financial_kg import DynamicFinancialKG
-from src.kg_holder import set_kg
-from src.agents.coordinator import create_graph
-
 load_dotenv()
 
-app = FastAPI(title="LookUP API", version="1.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ---------------------------------------------------------------------------
-# Global State
-# ---------------------------------------------------------------------------
-kg = None
 langgraph_app = None
 is_ready = False
 
 
-# ---------------------------------------------------------------------------
-# Background Loader
-# ---------------------------------------------------------------------------
-def load_models_background():
-    global kg, langgraph_app, is_ready
+def _warm():
+    global langgraph_app, is_ready
     try:
-        print("⏳ Starting background heavy loading...", flush=True)
-
-        # CRITICAL: Heavy imports moved INSIDE the thread
-        import torch
-        from src.graph.financial_kg import DynamicFinancialKG
-        from src.kg_holder import set_kg
         from src.agents.coordinator import create_graph
-
-        # 1. KG Init
-        kg = DynamicFinancialKG()
-        set_kg(kg)
-
-        # 2. Load model
-        model_path = os.path.join(project_root, "calibrated_gnn_reasoning.pt")
-        if os.path.exists(model_path):
-            kg.gnn_model.load_state_dict(torch.load(model_path, map_location="cpu"))
-            kg.gnn_model.eval()
-            print("➡️ GNN Weights loaded.", flush=True)
-
-        # 3. LangGraph
+        from src.agents.retriever_agent import get_model
         langgraph_app = create_graph()
-
+        get_model()  # download/load the cross-encoder once
         is_ready = True
-        print("✅ API FULLY INITIALIZED.", flush=True)
-
+        print("API ready.", flush=True)
     except Exception as e:
-        print(f"❌ Background loading failed: {e}", flush=True)
+        print(f"Background loading failed: {e}", flush=True)
 
 
-@app.on_event("startup")
-async def startup_event():
-    # This thread starts immediately; uvicorn can now bind to the port in <1s
-    thread = threading.Thread(target=load_models_background, daemon=True)
-    thread.start()
+@asynccontextmanager
+async def lifespan(_app):
+    threading.Thread(target=_warm, daemon=True).start()
+    yield
 
 
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
+app = FastAPI(title="LookUP API", version="1.1.0", lifespan=lifespan)
+
+_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins,
+    allow_credentials=False,  # "*" with credentials is invalid and unsafe
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 class AnalyzeRequest(BaseModel):
     query: str
     ticker: str
 
+
 class GraphHealth(BaseModel):
-    nodes: int
-    financial_edges: int
-    news_edges: int
+    nodes: int = 0
+    financial_edges: int = 0
+    news_edges: int = 0
+
+
+class RankedItem(BaseModel):
+    headline: str
+    source: str | None = None
+    url: str | None = None
+    published_at: str
+    ticker: str
+    is_primary: bool
+    rerank_score: float
+
 
 class AnalyzeResponse(BaseModel):
     ticker: str
     display_name: str
     final_report: str
-    gnn_evidence: list[str]
-    reranked_documents: list[str]
-    competitor_candidates: list[str]
-    graph_health: GraphHealth
+    abstained: bool = False
+    abstain_reason: str = ""
+    as_of: str = ""
+    ranked: list[RankedItem] = []
+    reranked_documents: list[str] = []
+    # Deprecated, always empty. Kept so the current frontend keeps parsing;
+    # removed when the UI is updated.
+    gnn_evidence: list[str] = []
+    competitor_candidates: list[str] = []
+    graph_health: GraphHealth = GraphHealth()
+
 
 class ResolveResponse(BaseModel):
     ticker: str | None
     display_name: str | None
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return {"status": "loading" if not is_ready else "healthy"}
+    return {"status": "healthy" if is_ready else "loading"}
+
 
 @app.get("/resolve", response_model=ResolveResponse)
 def resolve_ticker(query: str):
-    # This works immediately even while models are loading!
     try:
         search = yf.Search(query, max_results=3)
         if search.quotes:
             best = search.quotes[0]
-            return ResolveResponse(ticker=best["symbol"], display_name=best.get("shortname", best["symbol"]))
-    except:
+            return ResolveResponse(ticker=best["symbol"],
+                                   display_name=best.get("shortname", best["symbol"]))
+    except Exception:
         pass
     return ResolveResponse(ticker=None, display_name=None)
 
+
 @app.post("/analyze", response_model=AnalyzeResponse)
 def analyze(req: AnalyzeRequest):
-    global kg, langgraph_app, is_ready
     if not is_ready:
-        raise HTTPException(status_code=503, detail="System initializing. Try in 2 mins.")
-
-    # Your existing analysis logic...
-    initial_state = {"query": req.query, "tickers": [req.ticker], "competitor_candidates": [], 
-                     "gnn_evidence": [], "reranked_documents": [], "final_report": "", "iteration_count": 0}
-    
-    result = langgraph_app.invoke(initial_state, config={"configurable": {"thread_id": req.ticker}})
-    
-    reported = len([d for _, _, d in kg.graph.edges(data=True) if d.get("relation") == "REPORTED"])
-    impacts = len([d for _, _, d in kg.graph.edges(data=True) if d.get("relation") == "IMPACTS"])
-
+        raise HTTPException(status_code=503, detail="System initializing. Try again shortly.")
+    state = {"query": req.query, "tickers": [req.ticker]}
+    result = langgraph_app.invoke(state)  # stateless: no thread_id, no checkpointer
     return AnalyzeResponse(
         ticker=req.ticker,
         display_name=req.ticker,
         final_report=result.get("final_report", ""),
-        gnn_evidence=result.get("gnn_evidence", []),
+        abstained=result.get("abstained", False),
+        abstain_reason=result.get("abstain_reason", ""),
+        as_of=result.get("as_of", ""),
+        ranked=result.get("ranked", []),
         reranked_documents=result.get("reranked_documents", []),
-        competitor_candidates=result.get("competitor_candidates", []),
-        graph_health=GraphHealth(nodes=len(kg.graph.nodes), financial_edges=reported, news_edges=impacts)
     )

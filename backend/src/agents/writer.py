@@ -1,75 +1,47 @@
-'''
+"""Honest report writer.
+
+States what was done and what was not. It makes no causal claim: the ranking
+is textual relevance of headlines to the query, not validated attribution.
+"""
 from .state import LOOKUPState
-from src.inference.reasoning_engine import LookUPReporter
-from src.kg_holder import get_kg
-import os
+
+
+def _line(i: int, d: dict) -> str:
+    who = "" if d["is_primary"] else f" [{d['ticker']}]"
+    return (f"{i}. {d['headline']}{who} - {d.get('source') or 'unknown'}, "
+            f"{d['published_at'][:16]}Z")
+
 
 def writer_agent(state: LOOKUPState) -> dict:
-    kg = get_kg()
-    primary_ticker = state["tickers"][0]
-    
-    # Path logic
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-    model_path = os.path.join(project_root, "calibrated_gnn_reasoning.pt")
-    
-    reporter = LookUPReporter(kg, model_path)
-    report_text = reporter.generate_report(primary_ticker)
-    
-    # Format the GNN Specialist Insights section
-    insights = "\n".join(state.get("gnn_evidence", []))
-    comps = ", ".join(state.get("competitor_candidates", []))
-    
-    final_output = f"{report_text}\n\n"
-    final_output += "---\n**GNN Specialist Insights**\n"
-    final_output += insights if insights else "No specific GNN drivers identified in state."
-    
-    if comps:
-        final_output += f"\n\n**Top Competitor Candidates:** {comps}"
-        
-    docs = state.get("reranked_documents", [])
-    if docs:
-        docs_str = "\n".join([f"- {d}" for d in docs])
-        # FIXED: Changed final_report to final_output
-        final_output += f"\n\n**Relevant Deep-Context Documents:**\n{docs_str}"
-        
-    return {"final_report": final_output}
-'''
+    primary = state["tickers"][0]
+    ranked = state.get("ranked") or []
+    pool = state.get("news_pool") or []
+    window = f"72h before {state['as_of'][:16]}Z"
 
-# LLM Bypass 
+    if not pool:
+        return {
+            "abstained": True,
+            "abstain_reason": "no_timestamped_news_in_window",
+            "final_report": (
+                f"No timestamped news for {primary} or its peers was found in the "
+                "last 72 hours, so no explanation is offered."
+            ),
+        }
 
-from .state import LOOKUPState
-from src.kg_holder import get_kg
-import os
+    own = sum(1 for d in pool if d["is_primary"])
+    if own == 0:
+        lines = [
+            f"No headlines about {primary} itself were found in the {window}, "
+            "so no explanation of its move is offered.",
+            "",
+            "Sector context from peers (not about this company):",
+        ] + [_line(i, d) for i, d in enumerate(ranked, 1)]
+        return {"abstained": True, "abstain_reason": "no_news_for_primary_ticker",
+                "final_report": "\n".join(lines)}
 
-def writer_agent(state: LOOKUPState) -> dict:
-    primary_ticker = state["tickers"][0]
-    
-    # Header
-    manual_summary = f"### 🛠️ Technical Debug Summary for {primary_ticker}\n"
-    manual_summary += "*LLM reasoning engine is currently in **OFFLINE** mode.*\n\n"
-    
-    # 1. GNN Causal Drivers
-    insights = state.get("gnn_evidence", [])
-    manual_summary += "**Raw GNN Causal Drivers:**\n"
-    if insights:
-        manual_summary += "\n".join([f"- {i}" for i in insights])
-    else:
-        manual_summary += "No GNN drivers identified.\n"
-
-    # 2. Competitor/Peer Proximity
-    comps = state.get("competitor_candidates", [])
-    if comps:
-        manual_summary += f"\n\n**GNN Peer Proximity (System 2):**\n"
-        manual_summary += " | ".join([f"`{c}`" for c in comps])
-    else:
-        manual_summary += "\n\n**GNN Peer Proximity:** No candidates found (Graph too sparse)."
-        
-    # 3. Vector RAG Results
-    docs = state.get("reranked_documents", [])
-    if docs:
-        manual_summary += f"\n\n**Relevant Deep-Context Documents:**\n"
-        manual_summary += "\n".join([f"- {d}" for d in docs])
-    else:
-        manual_summary += "\n\n**Vector RAG:** No documents retrieved."
-        
-    return {"final_report": manual_summary}
+    lines = [f"### Most relevant recent headlines for {primary}",
+             f"*Ranked by cross-encoder relevance from {len(pool)} headlines "
+             f"({own} about {primary}) in the {window}. This is a relevance "
+             "ranking, not a verified explanation of the price move.*", ""]
+    lines += [_line(i, d) for i, d in enumerate(ranked, 1)]
+    return {"abstained": False, "abstain_reason": "", "final_report": "\n".join(lines)}
