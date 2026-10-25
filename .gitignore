@@ -1,8 +1,61 @@
-
-# environments
-backend/.venv/
-backend/source/
+# Environments
 .venv/
+env/
+venv/
+ENV/
+backend/source/
 
 # uv
 .uv-cache/
+
+# Secrets (keep the template)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+
+# Local vector stores (rebuilt at runtime)
+chroma_db/
+
+# Jupyter (notebooks themselves are tracked)
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs and temp
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Experiment tracking
+mlruns/
+wandb/
+
+# Build output
+dist/
+build/
