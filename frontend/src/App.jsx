@@ -4,7 +4,14 @@ import remarkGfm from 'remark-gfm'
 import styles from './App.module.css'
 
 
-const API = import.meta.env.VITE_API_URL || '/api'
+const API = import.meta.env.DEV ? '/api' : (import.meta.env.VITE_API_URL || '/api')
+
+const ABSTAIN_TEXT = {
+  no_news_for_primary_ticker:
+    'No recent headlines about this company were found, so no explanation is offered. Peer headlines are shown as context only.',
+  no_timestamped_news_in_window:
+    'No timestamped news was found for this company or its peers in the last 72 hours, so no explanation is offered.',
+}
 
 // ── API helpers ──────────────────────────────────────────────────────────────
 async function apiResolve(query) {
@@ -26,14 +33,23 @@ async function apiAnalyze(ticker, query) {
   return res.json()
 }
 
+function formatWhen(iso) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
 // ── Sub-components ───────────────────────────────────────────────────────────
 
-function GraphHealthPanel({ health }) {
+function CoveragePanel({ diag, asOf }) {
+  const d = diag || {}
   return (
-    <div className={styles.healthGrid}>
-      <HealthCard label="Nodes" value={health.nodes} color="accent" />
-      <HealthCard label="Financial Edges" value={health.financial_edges} color="blue" />
-      <HealthCard label="News Edges" value={health.news_edges} color="amber" />
+    <div>
+      <div className={styles.healthGrid}>
+        <HealthCard label="Headlines (72h)" value={d.pool_size ?? 0} color="accent" />
+        <HealthCard label="About this company" value={d.own_count ?? 0} color="blue" />
+      </div>
+      {asOf && <div className={styles.peerSub}>as of {formatWhen(asOf)}</div>}
     </div>
   )
 }
@@ -47,7 +63,7 @@ function HealthCard({ label, value, color }) {
   )
 }
 
-function EvidencePanel({ title, prefix, items, emptyMsg }) {
+function HeadlinePanel({ title, items, emptyMsg }) {
   const [open, setOpen] = useState(true)
   return (
     <div className={styles.panel}>
@@ -57,35 +73,27 @@ function EvidencePanel({ title, prefix, items, emptyMsg }) {
       </button>
       {open && (
         <div className={styles.panelBody}>
-          {items.length ? items.map((item, i) => (
+          {items.length ? items.map((it, i) => (
             <div key={i} className={styles.evidenceItem}>
               <span className={styles.evidenceIdx}>{String(i + 1).padStart(2, '0')}</span>
-              <span className={styles.evidenceText}>{item}</span>
+              <span className={styles.evidenceText}>
+                {it.url ? (
+                  <a href={it.url} target="_blank" rel="noopener noreferrer">{it.headline}</a>
+                ) : it.headline}
+                <br />
+                <span className={styles.peerSub}>
+                  {it.is_primary ? 'this company' : `peer: ${it.ticker}`}
+                  {' · '}{it.source || 'unknown source'}
+                  {' · '}{formatWhen(it.published_at)}
+                  {' · '}relevance {it.rerank_score.toFixed(2)}
+                </span>
+              </span>
             </div>
           )) : (
             <p className={styles.empty}>{emptyMsg}</p>
           )}
         </div>
       )}
-    </div>
-  )
-}
-
-function PeerCard({ data }) {
-  const name = data.split(' (')[0]
-  const simRaw = data.split('Sim: ')[1]?.replace(')', '') ?? '0'
-  const pct = (parseFloat(simRaw) * 100).toFixed(1)
-  const width = `${Math.min(parseFloat(pct), 100)}%`
-  return (
-    <div className={styles.peerCard}>
-      <div className={styles.peerTop}>
-        <span className={styles.peerTicker}>{name}</span>
-        <span className={styles.peerPct}>{pct}%</span>
-      </div>
-      <div className={styles.peerBar}>
-        <div className={styles.peerFill} style={{ width }} />
-      </div>
-      <span className={styles.peerSub}>cosine similarity · GNN latent space</span>
     </div>
   )
 }
@@ -157,17 +165,18 @@ export default function App() {
       addLog(`Resolved → ${display_name} (${ticker})`, 'success')
       setPhase('analyzing')
 
-      addLog('Initializing coordinator agent…', 'info')
-      addLog('Building Knowledge Graph…', 'info')
-      addLog('Injecting real-time news sentiment…', 'info')
-      addLog('Running GNN forward pass…', 'info')
-      addLog('Cross-encoder reranking documents…', 'info')
-      addLog('Generating causal report…', 'info')
+      addLog('Collecting news from the last 72 hours (company and sector peers)…', 'info')
+      addLog('Ranking headlines against your question…', 'info')
 
       const data = await apiAnalyze(ticker, query)
       setResult(data)
       setPhase('done')
-      addLog(`Analysis complete — ${data.graph_health.nodes} nodes in graph.`, 'success')
+      const n = data.diagnostics?.pool_size ?? 0
+      if (data.abstained) {
+        addLog(`No explanation offered (${data.abstain_reason}). ${n} headlines considered.`, 'error')
+      } else {
+        addLog(`Done — ranked ${n} headlines.`, 'success')
+      }
     } catch (err) {
       setError(err.message)
       setPhase('error')
@@ -187,12 +196,12 @@ export default function App() {
             <span className={styles.logoText}>ookUP</span>
           </div>
           <div className={styles.headerMeta}>
-            <span className={styles.badge}>GNN · RAG · LLM</span>
-            <span className={styles.version}>v1.0</span>
+            <span className={styles.badge}>NEWS · CROSS-ENCODER</span>
+            <span className={styles.version}>v1.1</span>
           </div>
         </div>
         <p className={styles.tagline}>
-          Multi-agent causal financial reasoning &mdash; GNN Attention · Vector RAG · Gemini
+          Recent news ranked by relevance to your question &mdash; and an honest &ldquo;no answer&rdquo; when there isn&rsquo;t enough evidence
         </p>
       </header>
 
@@ -255,52 +264,39 @@ export default function App() {
         {/* ── Results ── */}
         {phase === 'done' && result && (
           <>
-            {/* Resolved ticker banner */}
             <section className={`${styles.section} fade-up`} style={{ animationDelay: '0.05s' }}>
               <div className={styles.resolvedBanner}>
                 <div>
                   <div className={styles.resolvedName}>{result.display_name}</div>
                   <div className={styles.resolvedTicker}>{result.ticker}</div>
                 </div>
-                <GraphHealthPanel health={result.graph_health} />
+                <CoveragePanel diag={result.diagnostics} asOf={result.as_of} />
               </div>
             </section>
 
-            {/* Final report */}
+            {result.abstained && (
+              <section className={`${styles.section} fade-up`} style={{ animationDelay: '0.08s' }}>
+                <div className={styles.errorBox}>
+                  <span className={styles.errorIcon}>ⓘ</span>
+                  <span>{ABSTAIN_TEXT[result.abstain_reason] || 'Not enough evidence to offer an explanation.'}</span>
+                </div>
+              </section>
+            )}
+
             <section className={`${styles.section} fade-up`} style={{ animationDelay: '0.1s' }}>
-              <div className={styles.sectionLabel}>causal analysis report</div>
+              <div className={styles.sectionLabel}>{result.abstained ? 'context' : 'relevant headlines'}</div>
               <div className={styles.reportBox}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.final_report}</ReactMarkdown>
               </div>
             </section>
 
-            {/* GNN + RAG panels */}
-            <section className={`${styles.twoCol} fade-up`} style={{ animationDelay: '0.15s' }}>
-              <EvidencePanel
-                title="GNN Causal Drivers — Attention Mapping"
-                prefix="driver"
-                items={result.gnn_evidence}
-                emptyMsg="No high-influence drivers identified in the current graph state."
-              />
-              <EvidencePanel
-                title="Vector RAG — Top Reranked Documents"
-                prefix="doc"
-                items={result.reranked_documents}
-                emptyMsg="No relevant documents retrieved."
+            <section className={`${styles.section} fade-up`} style={{ animationDelay: '0.15s' }}>
+              <HeadlinePanel
+                title="Sources — top-ranked headlines"
+                items={result.ranked || []}
+                emptyMsg="No headlines to show."
               />
             </section>
-
-            {/* Competitor peers */}
-            {result.competitor_candidates.length > 0 && (
-              <section className={`${styles.section} fade-up`} style={{ animationDelay: '0.2s' }}>
-                <div className={styles.sectionLabel}>peer proximity — GNN latent space</div>
-                <div className={styles.peerGrid}>
-                  {result.competitor_candidates.map((c, i) => (
-                    <PeerCard key={i} data={c} />
-                  ))}
-                </div>
-              </section>
-            )}
           </>
         )}
 
@@ -308,21 +304,19 @@ export default function App() {
         {phase === 'idle' && (
           <div className={`${styles.idleBox} fade-up`}>
             <div className={styles.idleGrid}>
-              <IdleCard icon="🧠" title="GNN Attention" desc="Graph neural network maps causal relationships between news events and price movements." />
-              <IdleCard icon="📑" title="Vector RAG" desc="Cross-encoder reranking surfaces the most contextually relevant documents from the knowledge store." />
-              <IdleCard icon="🏢" title="Peer Proximity" desc="GNN latent-space cosine similarity identifies mathematically similar companies." />
-              <IdleCard icon="✦" title="Gemini Synthesis" desc="Gemini generates a concise, data-driven causal report grounded in GNN evidence." />
+              <IdleCard icon="🕒" title="Point-in-time news" desc="Only headlines published in the 72 hours before your question, each with its publish time and source." />
+              <IdleCard icon="📑" title="Cross-encoder ranking" desc="A cross-encoder scores every headline against your question and surfaces the most relevant." />
+              <IdleCard icon="🏢" title="Sector context" desc="Peer-company headlines are shown as context, and labelled as such." />
+              <IdleCard icon="✋" title="Says when it doesn't know" desc="If there is no news about the company itself, LookUP says so instead of guessing." />
             </div>
           </div>
         )}
       </main>
 
       <footer className={styles.footer}>
-        <span>LookUP v1.0</span>
+        <span>LookUP v1.1</span>
         <span className={styles.footerSep}>·</span>
-        <span>Multi-Agent Graph RAG</span>
-        <span className={styles.footerSep}>·</span>
-        <span>GNN + Vector Store + Gemini</span>
+        <span>A relevance ranking, not a verified explanation of price moves</span>
       </footer>
     </div>
   )

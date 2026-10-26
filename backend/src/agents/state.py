@@ -16,3 +16,4 @@ class LOOKUPState(TypedDict, total=False):
     final_report: str
     abstained: bool
     abstain_reason: str
+    diagnostics: Dict[str, Any]   # per-request provider counts, for debugging

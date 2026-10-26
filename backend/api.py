@@ -2,12 +2,12 @@
 LookUP FastAPI backend.
 Run from backend/:  uv run uvicorn api:app --host 0.0.0.0 --port 8000
 """
+import logging
 import os
 import sys
 import threading
 from contextlib import asynccontextmanager
 
-import yfinance as yf
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +18,8 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 load_dotenv()
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+logging.getLogger("lookup").setLevel(logging.INFO)  # our logs only; third-party stay quiet
 
 langgraph_app = None
 is_ready = False
@@ -59,17 +61,12 @@ class AnalyzeRequest(BaseModel):
     ticker: str
 
 
-class GraphHealth(BaseModel):
-    nodes: int = 0
-    financial_edges: int = 0
-    news_edges: int = 0
-
-
 class RankedItem(BaseModel):
     headline: str
     source: str | None = None
     url: str | None = None
     published_at: str
+    provider: str | None = None
     ticker: str
     is_primary: bool
     rerank_score: float
@@ -84,11 +81,7 @@ class AnalyzeResponse(BaseModel):
     as_of: str = ""
     ranked: list[RankedItem] = []
     reranked_documents: list[str] = []
-    # Deprecated, always empty. Kept so the current frontend keeps parsing;
-    # removed when the UI is updated.
-    gnn_evidence: list[str] = []
-    competitor_candidates: list[str] = []
-    graph_health: GraphHealth = GraphHealth()
+    diagnostics: dict = {}
 
 
 class ResolveResponse(BaseModel):
@@ -103,15 +96,9 @@ def health():
 
 @app.get("/resolve", response_model=ResolveResponse)
 def resolve_ticker(query: str):
-    try:
-        search = yf.Search(query, max_results=3)
-        if search.quotes:
-            best = search.quotes[0]
-            return ResolveResponse(ticker=best["symbol"],
-                                   display_name=best.get("shortname", best["symbol"]))
-    except Exception:
-        pass
-    return ResolveResponse(ticker=None, display_name=None)
+    from src.streaming.ticker_resolver import resolve
+    ticker, name = resolve(query)
+    return ResolveResponse(ticker=ticker, display_name=name)
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -129,4 +116,5 @@ def analyze(req: AnalyzeRequest):
         as_of=result.get("as_of", ""),
         ranked=result.get("ranked", []),
         reranked_documents=result.get("reranked_documents", []),
+        diagnostics=result.get("diagnostics", {}),
     )
