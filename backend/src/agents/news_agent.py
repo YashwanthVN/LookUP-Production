@@ -2,8 +2,8 @@
 
 Tiers (each runs only if the earlier ones left fewer than ENOUGH headlines that
 name the company; every tier is recorded in diagnostics['tiers']):
-  1. providers + GDELT      window (as_of-72h, as_of]
-  2. Google News            same window
+  1. providers             window (as_of-72h, as_of]
+  2. Google News, then GDELT only if still short   same window
   3. Google News, wider     (as_of-7d, as_of], plus "<name> shares" / "<name> stock"
   4. Google News, post-open (events only) (open, min(now, open+48h)]
 
@@ -119,7 +119,11 @@ def news_agent(state: LOOKUPState) -> dict:
             record("providers", added)
 
     diag = {"primary_from_providers": primary_n, "gdelt": None}
-    if _gdelt_enabled() and (indian or primary_n == 0):
+
+    def run_gdelt():
+        # GDELT is slow (8 s spacing, 10 s retry on 429), so it runs only if needed
+        if not (_gdelt_enabled() and (indian or primary_n == 0)):
+            return
         rep = {}
         try:
             items, rep = _gdelt_items(primary, since, until)
@@ -139,8 +143,12 @@ def news_agent(state: LOOKUPState) -> dict:
             items, rep = [], {"error": f"exception:{type(e).__name__}"}
         record(f"{tier}:{term}" if term != core else tier, add(items, primary, phase, tier), rep)
 
-    if _gnews_enabled() and core:
+    if not (_gnews_enabled() and core):
+        run_gdelt()
+    else:
         gn(core, since, until, "pre", "google_news")
+        if own_pre() < ENOUGH:
+            run_gdelt()
         if own_pre() < ENOUGH:
             wide = until - pd.Timedelta(days=WIDE_DAYS)
             for term in (core, f"{core} shares", f"{core} stock"):

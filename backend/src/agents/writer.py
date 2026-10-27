@@ -145,7 +145,7 @@ def writer_agent(state: LOOKUPState) -> dict:
             + "). This is a relevance ranking, not a verified explanation of the price move.*", ""]
     idx = 1
     if pre:
-        out += ["**Published before the session opened**" if mode == "explained" else "**Headlines**"]
+        out += ["**Published before the session opened**" if mode == "explained" else "**Headlines**", ""]
         out += _numbered(pre, idx)
         idx += len(pre)
     elif mode == "explained":
@@ -153,6 +153,6 @@ def writer_agent(state: LOOKUPState) -> dict:
                 f"{searched}"]
     if post:
         out += ["", "**Published after the session opened** - these may report the move rather "
-                "than cause it, and are outside the validated pre-open evidence window."]
+                "than cause it, and are outside the validated pre-open evidence window.", ""]
         out += _numbered(post, idx)
     return {"abstained": False, "abstain_reason": "", "final_report": "\n".join(out)}

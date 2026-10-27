@@ -137,3 +137,34 @@ def test_peer_context_function_matches_the_date():
     out = REAL_PEER_CONTEXT(["AAA.NS"], d, fetch=lambda s: mkt if s.startswith("^") else stk,
                                   now=pd.Timestamp("2027-06-01T00:00:00Z"))
     assert len(out) == 1 and set(out[0]) == {"ticker", "ret", "abnormal", "z"}
+
+
+def test_post_open_items_use_a_move_aware_query(monkeypatch):
+    seen = {}
+    class Spy:
+        def predict(self, pairs):
+            for q, h in pairs: seen[h] = q
+            return [1.0] * len(pairs)
+    def gn(term, since, until, region="IN", name=None, symbol=None, limit=40, session=None):
+        if since == OPEN:
+            return [_item("XYZ Corp shares jump on results", OPEN + pd.Timedelta(hours=2))], {}
+        return [_item("XYZ Corp board meeting", OPEN - pd.Timedelta(hours=2))], {}
+    g = _graph(monkeypatch, gn)
+    monkeypatch.setattr(retriever_agent, "get_model", lambda: Spy())
+    g.invoke({"query": "why", "tickers": ["XYZ"]})
+    assert seen["XYZ Corp shares jump on results"] == "Why did XYZ shares rise 6%?"
+    assert seen["XYZ Corp board meeting"].startswith("XYZ. ")
+
+
+def test_gdelt_is_skipped_when_google_news_already_has_enough(monkeypatch):
+    monkeypatch.setenv("GDELT_DOC_ENABLED", "1")
+    called = []
+    monkeypatch.setattr(news_agent, "_gdelt_items", lambda *a: called.append(1) or ([], {}))
+    def gn(term, since, until, region="IN", name=None, symbol=None, limit=40, session=None):
+        if until == OPEN and since == OPEN - pd.Timedelta(hours=72):
+            return [_item(f"XYZ.NS Corp story {i}", OPEN - pd.Timedelta(hours=i + 1)) for i in range(6)], {}
+        return [], {}
+    g = _graph(monkeypatch, gn)
+    monkeypatch.setenv("GDELT_DOC_ENABLED", "1")
+    g.invoke({"query": "why", "tickers": ["XYZ.NS"]})
+    assert called == []

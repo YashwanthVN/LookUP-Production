@@ -2,6 +2,8 @@
 
 Model: cross-encoder/ms-marco-MiniLM-L-6-v2 over the FULL pool (no prefilter).
 Query follows the validated form: "{company name}. {business summary[:300]}".
+Headlines published after the open (events only) are scored with a move-aware query
+instead: "Why did {name} shares rise 6%?". That choice is unvalidated.
 The user's own words (fell, dropping...) are NOT used when a profile exists:
 they pull in any headline containing those verbs, whatever company it is about.
 
@@ -42,15 +44,28 @@ def build_query(profile: Optional[Dict[str, str]], user_query: str, primary: str
     return f"{name}. {q}"
 
 
+def build_post_query(profile, move, primary: str) -> str:
+    """Query for headlines published AFTER the open. Unvalidated: they are scored on
+    whether they answer 'why did it move', not on being about the company's business."""
+    name = core_name((profile or {}).get("name") or primary.split(".")[0])
+    ret = (move or {}).get("ret")
+    if ret is None:
+        return f"Why did {name} shares move?"
+    return f"Why did {name} shares {'fall' if ret < 0 else 'rise'} {abs(ret) * 100:.0f}%?"
+
+
 def retriever_agent(state: LOOKUPState) -> dict:
     pool = state.get("news_pool") or []
     if not pool:
         return {"ranked": [], "reranked_documents": []}
 
-    q = build_query(state.get("profile"), state.get("query", ""), state["tickers"][0])
+    primary = state["tickers"][0]
+    q = build_query(state.get("profile"), state.get("query", ""), primary)
+    q_post = build_post_query(state.get("profile"), state.get("move"), primary)
     model = get_model()
     with _lock:  # one predict at a time; the model object is shared
-        scores = model.predict([(q, d["headline"]) for d in pool])
+        scores = model.predict([(q_post if d.get("phase") == "post" else q, d["headline"])
+                                for d in pool])
 
     ranked = sorted(({**d, "rerank_score": float(s)} for d, s in zip(pool, scores)),
                     key=lambda x: x["rerank_score"], reverse=True)
