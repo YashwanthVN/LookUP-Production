@@ -53,7 +53,7 @@ def _fmt(ts: pd.Timestamp) -> str:
     return ts.tz_convert("UTC").strftime("%Y%m%d%H%M%S")
 
 
-def _names_company(title: str, name: str, symbol: Optional[str]) -> bool:
+def names_company(title: str, name: str, symbol: Optional[str]) -> bool:
     t = title.lower()
     if name and name.lower() in t:
         return True
@@ -79,7 +79,7 @@ def filter_articles(articles, name, symbol, since, until, limit):
         if not (since < ts <= until):
             rep["dropped_out_of_window"] += 1
             continue
-        if not _names_company(title, name, symbol):
+        if not names_company(title, name, symbol):
             rep["dropped_no_title_match"] += 1
             continue
         key = re.sub(r"\W+", " ", title.lower()).strip()

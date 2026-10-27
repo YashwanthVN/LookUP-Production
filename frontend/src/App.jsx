@@ -4,13 +4,17 @@ import remarkGfm from 'remark-gfm'
 import styles from './App.module.css'
 
 
+// Dev server always uses the local proxy (-> http://localhost:8000).
+// Only a production build uses VITE_API_URL.
 const API = import.meta.env.DEV ? '/api' : (import.meta.env.VITE_API_URL || '/api')
 
 const ABSTAIN_TEXT = {
+  no_unusual_move:
+    'No unusual price move in the last few sessions, so there is nothing to explain. Recent coverage is shown below as context only.',
   no_news_for_primary_ticker:
     'No recent headlines about this company were found, so no explanation is offered. Peer headlines are shown as context only.',
   no_timestamped_news_in_window:
-    'No timestamped news was found for this company or its peers in the last 72 hours, so no explanation is offered.',
+    'The price move is real, but no timestamped news was found after searching several sources, so no explanation is offered.',
 }
 
 // ── API helpers ──────────────────────────────────────────────────────────────
@@ -33,6 +37,10 @@ async function apiAnalyze(ticker, query) {
   return res.json()
 }
 
+function pct(x) {
+  return `${(x * 100).toFixed(1)}%`
+}
+
 function formatWhen(iso) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
@@ -41,15 +49,40 @@ function formatWhen(iso) {
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
-function CoveragePanel({ diag, asOf }) {
+function CoveragePanel({ diag, asOf, move, mode }) {
   const d = diag || {}
+  const hasMove = move && move.z !== undefined
   return (
     <div>
       <div className={styles.healthGrid}>
-        <HealthCard label="Headlines (72h)" value={d.pool_size ?? 0} color="accent" />
-        <HealthCard label="About this company" value={d.own_count ?? 0} color="blue" />
+        {hasMove && (
+          <>
+            <HealthCard label={`Move ${move.date}`} value={pct(move.ret)} color={move.ret < 0 ? 'amber' : 'accent'} />
+            <HealthCard label="Market-adjusted" value={pct(move.abnormal)} color="blue" />
+            <HealthCard label="z-score" value={move.z.toFixed(1)} color="blue" />
+          </>
+        )}
+        {d.pool_size !== undefined && (
+          <>
+            <HealthCard label="Headlines found" value={d.pool_size} color="accent" />
+            <HealthCard label="Naming the company" value={(d.own_count ?? 0) + (d.post_count ?? 0)} color="blue" />
+          </>
+        )}
       </div>
-      {asOf && <div className={styles.peerSub}>as of {formatWhen(asOf)}</div>}
+      {hasMove && move.recent && move.recent.length > 0 && (
+        <div className={styles.peerSub}>
+          last {move.recent.length} sessions (z): {move.recent.slice().reverse().map(r => `${r.date.slice(5)} ${r.z.toFixed(1)}`).join(' · ')}
+        </div>
+      )}
+      {d.tiers && d.tiers.length > 0 && (
+        <div className={styles.peerSub}>
+          searched: {d.tiers.map(t => `${t.tier.replace('google_news', 'gnews')} ${t.error ? 'error' : t.company_added}`).join(' · ')}
+        </div>
+      )}
+      {mode === 'unchecked' && <div className={styles.peerSub}>price move not verified</div>}
+      {asOf && d.pool_size !== undefined && (
+        <div className={styles.peerSub}>evidence up to {formatWhen(asOf)}</div>
+      )}
     </div>
   )
 }
@@ -82,7 +115,10 @@ function HeadlinePanel({ title, items, emptyMsg }) {
                 ) : it.headline}
                 <br />
                 <span className={styles.peerSub}>
-                  {it.is_primary ? 'this company' : `peer: ${it.ticker}`}
+                  {it.scope === 'company' ? 'names the company'
+                    : it.scope === 'market' ? 'market news (company not named)'
+                    : `peer: ${it.ticker}`}
+                  {it.phase === 'post' ? ' · published after the open' : ''}
                   {' · '}{it.source || 'unknown source'}
                   {' · '}{formatWhen(it.published_at)}
                   {' · '}relevance {it.rerank_score.toFixed(2)}
@@ -165,14 +201,16 @@ export default function App() {
       addLog(`Resolved → ${display_name} (${ticker})`, 'success')
       setPhase('analyzing')
 
-      addLog('Collecting news from the last 72 hours (company and sector peers)…', 'info')
-      addLog('Ranking headlines against your question…', 'info')
+      addLog('Checking the latest session\'s price move against the market…', 'info')
+      addLog('If the move is unusual: collecting news from the 72 hours before that session, then ranking…', 'info')
 
       const data = await apiAnalyze(ticker, query)
       setResult(data)
       setPhase('done')
       const n = data.diagnostics?.pool_size ?? 0
-      if (data.abstained) {
+      if (data.abstain_reason === 'no_unusual_move') {
+        addLog('No unusual price move in the latest session; nothing to explain.', 'info')
+      } else if (data.abstained) {
         addLog(`No explanation offered (${data.abstain_reason}). ${n} headlines considered.`, 'error')
       } else {
         addLog(`Done — ranked ${n} headlines.`, 'success')
@@ -270,7 +308,7 @@ export default function App() {
                   <div className={styles.resolvedName}>{result.display_name}</div>
                   <div className={styles.resolvedTicker}>{result.ticker}</div>
                 </div>
-                <CoveragePanel diag={result.diagnostics} asOf={result.as_of} />
+                <CoveragePanel diag={result.diagnostics} asOf={result.as_of} move={result.move} mode={result.mode} />
               </div>
             </section>
 
@@ -284,19 +322,21 @@ export default function App() {
             )}
 
             <section className={`${styles.section} fade-up`} style={{ animationDelay: '0.1s' }}>
-              <div className={styles.sectionLabel}>{result.abstained ? 'context' : 'relevant headlines'}</div>
+              <div className={styles.sectionLabel}>{result.abstained ? 'summary' : 'relevant headlines'}</div>
               <div className={styles.reportBox}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.final_report}</ReactMarkdown>
               </div>
             </section>
 
+            {(result.ranked || []).length > 0 && (
             <section className={`${styles.section} fade-up`} style={{ animationDelay: '0.15s' }}>
               <HeadlinePanel
-                title="Sources — top-ranked headlines"
+                title={result.abstain_reason === 'no_unusual_move' ? 'Recent coverage — context only' : 'Sources — top-ranked headlines'}
                 items={result.ranked || []}
                 emptyMsg="No headlines to show."
               />
             </section>
+            )}
           </>
         )}
 
@@ -304,10 +344,10 @@ export default function App() {
         {phase === 'idle' && (
           <div className={`${styles.idleBox} fade-up`}>
             <div className={styles.idleGrid}>
-              <IdleCard icon="🕒" title="Point-in-time news" desc="Only headlines published in the 72 hours before your question, each with its publish time and source." />
+              <IdleCard icon="🕒" title="Point-in-time news" desc="Headlines published before the session opened come first; later coverage is labelled separately, since it may report the move rather than cause it." />
               <IdleCard icon="📑" title="Cross-encoder ranking" desc="A cross-encoder scores every headline against your question and surfaces the most relevant." />
               <IdleCard icon="🏢" title="Sector context" desc="Peer-company headlines are shown as context, and labelled as such." />
-              <IdleCard icon="✋" title="Says when it doesn't know" desc="If there is no news about the company itself, LookUP says so instead of guessing." />
+              <IdleCard icon="✋" title="Says when it doesn't know" desc="If the stock made no unusual move, or there is no news about the company itself, LookUP says so instead of guessing." />
             </div>
           </div>
         )}

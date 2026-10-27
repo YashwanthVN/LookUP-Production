@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import threading
+import warnings
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -18,6 +19,8 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 load_dotenv()
+# yfinance triggers a harmless pandas deprecation warning on every call
+warnings.filterwarnings("ignore", message=".*inplace keyword.*")
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 logging.getLogger("lookup").setLevel(logging.INFO)  # our logs only; third-party stay quiet
 
@@ -44,7 +47,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="LookUP API", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="LookUP API", version="1.2.0", lifespan=lifespan)
 
 _origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
@@ -69,6 +72,9 @@ class RankedItem(BaseModel):
     provider: str | None = None
     ticker: str
     is_primary: bool
+    scope: str = ""
+    phase: str = "pre"
+    tier: str = ""
     rerank_score: float
 
 
@@ -79,6 +85,9 @@ class AnalyzeResponse(BaseModel):
     abstained: bool = False
     abstain_reason: str = ""
     as_of: str = ""
+    mode: str = ""
+    move: dict | None = None
+    peer_context: list[dict] = []
     ranked: list[RankedItem] = []
     reranked_documents: list[str] = []
     diagnostics: dict = {}
@@ -107,13 +116,18 @@ def analyze(req: AnalyzeRequest):
         raise HTTPException(status_code=503, detail="System initializing. Try again shortly.")
     state = {"query": req.query, "tickers": [req.ticker]}
     result = langgraph_app.invoke(state)  # stateless: no thread_id, no checkpointer
+    primary = (result.get("tickers") or [req.ticker])[0]
+    name = (result.get("profile") or {}).get("name") or primary
     return AnalyzeResponse(
-        ticker=req.ticker,
-        display_name=req.ticker,
+        ticker=primary,
+        display_name=name,
         final_report=result.get("final_report", ""),
         abstained=result.get("abstained", False),
         abstain_reason=result.get("abstain_reason", ""),
         as_of=result.get("as_of", ""),
+        mode=result.get("mode", ""),
+        move=result.get("move"),
+        peer_context=result.get("peer_context", []),
         ranked=result.get("ranked", []),
         reranked_documents=result.get("reranked_documents", []),
         diagnostics=result.get("diagnostics", {}),
