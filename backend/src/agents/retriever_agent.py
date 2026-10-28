@@ -14,6 +14,9 @@ pool; see the roadmap.
 import threading
 from typing import Dict, Optional
 
+import pandas as pd
+
+from src.pricing import claims
 from src.streaming.gdelt_doc import core_name
 
 from .state import LOOKUPState
@@ -73,4 +76,28 @@ def retriever_agent(state: LOOKUPState) -> dict:
     top = ([d for d in ranked if d.get("phase", "pre") == "pre"][:TOP_K]
            + [d for d in ranked if d.get("phase") == "post"][:TOP_K])
     docs = [f"{d['headline']} (relevance: {d['rerank_score']:.3f})" for d in top]
+    top = _attach_claim_checks(top, state)
     return {"ranked": top, "reranked_documents": docs}
+
+
+CLAIM_WINDOW_H = 30
+
+
+def _attach_claim_checks(items, state):
+    """Compare each headline's own price figure with the explained session's prices."""
+    move = state.get("move") or {}
+    facts, opened = move.get("facts"), move.get("session_open")
+    if not facts or not opened or move.get("status") not in ("event", "no_event"):
+        return items
+    start = pd.Timestamp(opened)
+    end = start + pd.Timedelta(hours=CLAIM_WINDOW_H)
+    name = core_name((state.get("profile") or {}).get("name") or state["tickers"][0].split(".")[0])
+    out = []
+    for d in items:
+        d = dict(d)
+        if d.get("scope") == "company" and start <= pd.Timestamp(d["published_at"]) < end:
+            chk = claims.check(d["headline"], name, facts)
+            if chk:
+                d["claim_check"] = chk
+        out.append(d)
+    return out

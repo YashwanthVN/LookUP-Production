@@ -20,8 +20,19 @@ def _pct(x: float) -> str:
 
 def _line(i: int, d: dict) -> str:
     tag = {"company": "", "market": " [market news]"}.get(d.get("scope"), f" [{d['ticker']}]")
+    chk = d.get("claim_check")
+    price = f" *(price check: {chk['detail']})*" if chk else ""
     return (f"{i}. {d['headline']}{tag} - {d.get('source') or 'unknown'}, "
-            f"{d['published_at'][:16]}Z")
+            f"{d['published_at'][:16]}Z{price}")
+
+
+def facts_line(facts) -> str:
+    """Open/low/high/close of the session versus the previous close (price data only)."""
+    if not facts:
+        return ""
+    return (f"Session {facts['date']} versus the previous close of {facts['prev_close']:,.2f}: "
+            f"open {_pct(facts['gap'])}, low {_pct(facts['low_ret'])}, "
+            f"high {_pct(facts['high_ret'])}, close {_pct(facts['close_ret'])}.")
 
 
 def _numbered(items, start=1):
@@ -82,34 +93,64 @@ def writer_agent(state: LOOKUPState) -> dict:
     own_post = [d for d in post if d.get("scope") == "company"]
     searched = _searched(diag)
 
+    # ── asked-for date was not a complete session ────────────────────────────
+    if move.get("requested_date") and move.get("status") == "unavailable":
+        return {"abstained": True, "abstain_reason": "date_not_available",
+                "final_report": f"### No price check for {primary} on {move['requested_date']}\n"
+                                f"There is no complete trading session for that date in the price "
+                                f"history ({move.get('reason', 'unknown')}). It may be a weekend or "
+                                "holiday, too recent, or too old. No explanation is offered."}
+
     # ── no unusual move: no explanation, coverage as context only ────────────
     if move.get("status") == "no_event":
         recent = move.get("recent") or []
         n = move.get("lookback", len(recent) or 1)
-        text = (f"### No unusual move for {primary}\n"
-                f"None of the last {n} complete sessions had a market-adjusted move of "
-                f"|z| >= {move['z_threshold']} (the threshold used to flag events). "
-                f"Latest ({move['date']}): {_pct(move['ret'])}, market-adjusted "
-                f"{_pct(move['abnormal'])} vs {move['benchmark']} {_pct(move['bench_ret'])}, "
-                f"z = {move['z']:+.1f}.")
-        if recent:
-            big = max(recent, key=lambda r: abs(r["z"]))
-            text += (f" Largest in the window: {big['date']}, {_pct(big['ret'])} raw, "
-                     f"z = {big['z']:+.1f}.")
-        text += " There is no flagged price move to explain."
+        facts = move.get("facts")
+        swing = bool(facts and facts.get("intraday_flag"))
+        if move.get("requested_date"):
+            text = (f"### No unusual move for {primary} on {move['date']}\n"
+                    f"{_pct(move['ret'])}, market-adjusted {_pct(move['abnormal'])} vs "
+                    f"{move['benchmark']} {_pct(move['bench_ret'])}, z = {move['z']:+.1f}, below the "
+                    f"|z| >= {move['z_threshold']} threshold used to flag events.")
+        else:
+            text = (f"### No unusual move for {primary}\n"
+                    f"None of the last {n} complete sessions had a market-adjusted move of "
+                    f"|z| >= {move['z_threshold']} (the threshold used to flag events). "
+                    f"Latest ({move['date']}): {_pct(move['ret'])}, market-adjusted "
+                    f"{_pct(move['abnormal'])} vs {move['benchmark']} {_pct(move['bench_ret'])}, "
+                    f"z = {move['z']:+.1f}.")
+            if recent:
+                big = max(recent, key=lambda r: abs(r["z"]))
+                text += (f" Largest in the window: {big['date']}, {_pct(big['ret'])} raw, "
+                         f"z = {big['z']:+.1f}.")
+        fl = facts_line(facts)
+        if fl:
+            text += f"\n\n{fl}"
+        if swing:
+            text += (" The session had a large intraday swing that did not hold into the close, "
+                     "which a close-to-close check does not capture.")
+        else:
+            text += " There is no flagged price move to explain."
         note = _premise_note(state, move)
         if note:
             text += f"\n\n{note}"
-        if own_pre:
-            text += ("\n\nRecent coverage of the company is listed below as context only, "
-                     "ranked by relevance to its business. It is not an explanation of a price move.\n\n"
-                     + "\n".join(_numbered(own_pre)))
-        return {"abstained": True, "abstain_reason": "no_unusual_move", "final_report": text}
+        if own_pre or own_post:
+            text += ("\n\nCoverage of the company is listed below as context only, ranked by "
+                     "relevance. It is not a verified explanation of a price move.\n")
+            idx = 1
+            if own_pre:
+                text += "\n**Published before the session opened**\n\n" + "\n".join(_numbered(own_pre, idx))
+                idx += len(own_pre)
+            if own_post:
+                text += ("\n\n**Published after the session opened** - these may report the move "
+                         "rather than cause it.\n\n" + "\n".join(_numbered(own_post, idx)))
+        return {"abstained": True, "abstain_reason": "intraday_only" if swing else "no_unusual_move",
+                "final_report": text}
 
     # ── header ───────────────────────────────────────────────────────────────
     if mode == "explained":
         head = f"### {_move_text(move, primary)}"
-        notes = [n for n in (_premise_note(state, move),
+        notes = [n for n in (facts_line(move.get("facts")), _premise_note(state, move),
                              f"Most recent unusual move among the last {move['lookback']} complete sessions."
                              if move.get("lookback", 1) > 1 else "",
                              peer_line(move, state.get("peer_context") or [])) if n]

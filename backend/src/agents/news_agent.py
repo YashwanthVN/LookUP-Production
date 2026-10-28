@@ -63,6 +63,9 @@ def _gdelt_items(ticker: str, since, until):
 
 
 def news_agent(state: LOOKUPState) -> dict:
+    mv = state.get("move") or {}
+    if mv.get("requested_date") and mv.get("status") == "unavailable":
+        return {"news_pool": [], "diagnostics": {"skipped": "requested_date_unavailable"}}
     until = pd.Timestamp(state["as_of"])
     since = until - pd.Timedelta(hours=LOOKBACK_H)
     primary = state["tickers"][0]
@@ -155,7 +158,7 @@ def news_agent(state: LOOKUPState) -> dict:
                 gn(term, wide, until, "pre", "google_news_7d")
                 if own_pre() >= ENOUGH:
                     break
-        if state.get("mode") == "explained":
+        if state.get("mode") == "explained" or (mv.get("facts") or {}).get("intraday_flag"):
             now = pd.Timestamp(state.get("generated_at") or pd.Timestamp.now(tz="UTC"))
             post_until = min(now, until + pd.Timedelta(hours=POST_HOURS))
             if post_until > until:

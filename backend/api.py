@@ -47,7 +47,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="LookUP API", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="LookUP API", version="1.3.0", lifespan=lifespan)
 
 _origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
@@ -62,6 +62,7 @@ app.add_middleware(
 class AnalyzeRequest(BaseModel):
     query: str
     ticker: str
+    date: str | None = None   # YYYY-MM-DD; overrides a date written in the query
 
 
 class RankedItem(BaseModel):
@@ -75,6 +76,7 @@ class RankedItem(BaseModel):
     scope: str = ""
     phase: str = "pre"
     tier: str = ""
+    claim_check: dict | None = None
     rerank_score: float
 
 
@@ -106,7 +108,9 @@ def health():
 @app.get("/resolve", response_model=ResolveResponse)
 def resolve_ticker(query: str):
     from src.streaming.ticker_resolver import resolve
-    ticker, name = resolve(query)
+    import datetime as dt
+    from src.pricing.query_dates import strip_date
+    ticker, name = resolve(strip_date(query, dt.datetime.now(dt.timezone.utc).date()))
     return ResolveResponse(ticker=ticker, display_name=name)
 
 
@@ -115,6 +119,8 @@ def analyze(req: AnalyzeRequest):
     if not is_ready:
         raise HTTPException(status_code=503, detail="System initializing. Try again shortly.")
     state = {"query": req.query, "tickers": [req.ticker]}
+    if req.date:
+        state["target_date"] = req.date
     result = langgraph_app.invoke(state)  # stateless: no thread_id, no checkpointer
     primary = (result.get("tickers") or [req.ticker])[0]
     name = (result.get("profile") or {}).get("name") or primary

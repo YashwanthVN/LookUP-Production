@@ -11,6 +11,7 @@ class LOOKUPState(TypedDict, total=False):
     tickers: List[str]            # [primary, *peers]
     profile: Dict[str, str]       # name, summary (primary ticker)
     generated_at: str             # ISO UTC, when the request ran
+    target_date: str              # YYYY-MM-DD the user asked about (optional)
     as_of: str                    # ISO UTC; end of the evidence window
     move: Dict[str, Any]          # price-move check result
     mode: str                     # explained | none | unchecked

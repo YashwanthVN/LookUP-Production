@@ -11,6 +11,10 @@ const API = import.meta.env.DEV ? '/api' : (import.meta.env.VITE_API_URL || '/ap
 const ABSTAIN_TEXT = {
   no_unusual_move:
     'No unusual price move in the last few sessions, so there is nothing to explain. Recent coverage is shown below as context only.',
+  intraday_only:
+    'The close was not unusual, but the session had a large intraday swing. Coverage is shown below as context, not as a verified explanation.',
+  date_not_available:
+    'There is no complete trading session for that date (weekend, holiday, too recent or too old).',
   no_news_for_primary_ticker:
     'No recent headlines about this company were found, so no explanation is offered. Peer headlines are shown as context only.',
   no_timestamped_news_in_window:
@@ -24,11 +28,11 @@ async function apiResolve(query) {
   return res.json()
 }
 
-async function apiAnalyze(ticker, query) {
+async function apiAnalyze(ticker, query, date) {
   const res = await fetch(`${API}/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ticker, query }),
+    body: JSON.stringify({ ticker, query, date: date || null }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
@@ -119,6 +123,7 @@ function HeadlinePanel({ title, items, emptyMsg }) {
                     : it.scope === 'market' ? 'market news (company not named)'
                     : `peer: ${it.ticker}`}
                   {it.phase === 'post' ? ' · published after the open' : ''}
+                  {it.claim_check ? ` · price check: ${it.claim_check.verdict.replace('_', ' ')}` : ''}
                   {' · '}{it.source || 'unknown source'}
                   {' · '}{formatWhen(it.published_at)}
                   {' · '}relevance {it.rerank_score.toFixed(2)}
@@ -163,6 +168,7 @@ function StatusLog({ messages }) {
 // ── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [query, setQuery] = useState('')
+  const [day, setDay] = useState('')   // optional YYYY-MM-DD
   const [phase, setPhase] = useState('idle') // idle | resolving | analyzing | done | error
   const [resolved, setResolved] = useState(null)   // { ticker, display_name }
   const [result, setResult] = useState(null)
@@ -201,15 +207,16 @@ export default function App() {
       addLog(`Resolved → ${display_name} (${ticker})`, 'success')
       setPhase('analyzing')
 
-      addLog('Checking the latest session\'s price move against the market…', 'info')
+      addLog(day ? `Checking the price move on ${day} against the market…`
+                 : 'Checking the latest sessions\' price moves against the market…', 'info')
       addLog('If the move is unusual: collecting news from the 72 hours before that session, then ranking…', 'info')
 
-      const data = await apiAnalyze(ticker, query)
+      const data = await apiAnalyze(ticker, query, day)
       setResult(data)
       setPhase('done')
       const n = data.diagnostics?.pool_size ?? 0
-      if (data.abstain_reason === 'no_unusual_move') {
-        addLog('No unusual price move in the latest session; nothing to explain.', 'info')
+      if (data.abstain_reason === 'no_unusual_move' || data.abstain_reason === 'intraday_only') {
+        addLog('No unusual close-to-close move; coverage is context only.', 'info')
       } else if (data.abstained) {
         addLog(`No explanation offered (${data.abstain_reason}). ${n} headlines considered.`, 'error')
       } else {
@@ -259,6 +266,16 @@ export default function App() {
               />
               {busy && <Spinner />}
             </div>
+            <input
+              type="date"
+              className={styles.searchInput}
+              style={{ flex: '0 0 auto', width: 'auto', maxWidth: '11rem' }}
+              value={day}
+              max={new Date().toISOString().slice(0, 10)}
+              onChange={e => setDay(e.target.value)}
+              disabled={busy}
+              title="Optional: explain a specific day"
+            />
             <button
               type="submit"
               className={styles.searchBtn}
@@ -331,7 +348,7 @@ export default function App() {
             {(result.ranked || []).length > 0 && (
             <section className={`${styles.section} fade-up`} style={{ animationDelay: '0.15s' }}>
               <HeadlinePanel
-                title={result.abstain_reason === 'no_unusual_move' ? 'Recent coverage — context only' : 'Sources — top-ranked headlines'}
+                title={(result.abstain_reason === 'no_unusual_move' || result.abstain_reason === 'intraday_only') ? 'Coverage — context only' : 'Sources — top-ranked headlines'}
                 items={result.ranked || []}
                 emptyMsg="No headlines to show."
               />
